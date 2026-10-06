@@ -265,3 +265,359 @@ def test_reports_same_day_not_overwritten(tmp_job):
     check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
     reports = sorted(tmp_job.root.glob("pbc_report_job_*.json"))
     assert len(reports) == 2   # append-only: второй прогон не затёр первый
+
+
+# --- покрытие редких путей разбора ---
+
+def test_parse_blank_and_comment_between_card_and_count(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n\n** сколько термов\n1\n1, 1, 2.0\n", encoding="utf-8")
+    assert parse_equations(p)[0].terms == ((1, 1, 2.0),)
+
+
+def test_parse_nonint_term_count_raises(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\nдва\n1, 1, 1.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="число термов не целое"):
+        parse_equations(p)
+
+
+def test_parse_eos_after_card_raises(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="без строки с числом термов"):
+        parse_equations(p)
+
+
+def test_parse_comment_inside_terms(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n2\n1, 1, 1.0\n** перенос\n2, 1, -1.0\n", encoding="utf-8")
+    assert parse_equations(p)[0].terms == ((1, 1, 1.0), (2, 1, -1.0))
+
+
+def test_frd_version_unknown_when_absent(tmp_job):
+    text = make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})]).read_text()
+    tmp_job.frd.write_text("\n".join(ln for ln in text.splitlines()
+                                     if "1UVERSION" not in ln) + "\n", encoding="utf-8")
+    assert read_ccx_version(tmp_job.frd) == "unknown"
+
+
+def test_frd_malformed_100cl(tmp_job):
+    text = make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1e-3, 0, 0)})]).read_text()
+    text = text.replace("  100CL  1  0.1E-01", "  100CL  ?  ?")
+    tmp_job.frd.write_text(text, encoding="utf-8")
+    blocks = list(iter_disp_blocks(tmp_job.frd))
+    assert len(blocks) == 1 and blocks[0].step == 0
+    assert blocks[0].label.startswith("block 0")  # время не разобранось
+
+
+def test_frd_other_dataset_closes_disp(tmp_job):
+    text = make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1e-3, 0, 0)})]).read_text()
+    text = text.replace("    -3", "    -4  STRESS       1    1")
+    tmp_job.frd.write_text(text, encoding="utf-8")
+    blocks = list(iter_disp_blocks(tmp_job.frd))  # нестандартное закрытие, данные не теряем
+    assert len(blocks) == 1 and blocks[0].nodes.tolist() == [1]
+
+
+def test_frd_other_dataset_empty_disp_ignored(tmp_job):
+    # пустой незакрытый DISP + другой датасет: данных нет — блок просто забывается
+    text = make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1e-3, 0, 0)})]).read_text()
+    lines = []
+    for ln in text.splitlines():
+        if ln.startswith(" -1"):
+            continue                      # убрать строки узлов
+        if ln.strip() == "-3":
+            ln = "    -4  STRESS       1    1"  # другой датасет вместо закрытия
+        lines.append(ln)
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    assert list(iter_disp_blocks(tmp_job.frd)) == []
+
+
+def test_frd_garbage_node_tokens_raise(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})])
+    lines = [ln.replace(ln, " -1 abc def ghi jkl") if ln.startswith(" -1") else ln
+             for ln in tmp_job.frd.read_text(encoding="utf-8").splitlines()]
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="нечитаемая"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_compute_residuals_direct_errors(tmp_job):
+    from pbcchecker.frd_disp import DispBlock
+    from pbcchecker.residual import compute_residuals
+    import numpy as np
+    eqs = parse_equations(make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]]))
+    with pytest.raises(ValueError, match="нет уравнений"):
+        compute_residuals([], [DispBlock(1, "b", np.array([1], np.int32), np.zeros((1, 3)))])
+    with pytest.raises(ValueError, match="пустой блок"):
+        compute_residuals(eqs, [DispBlock(1, "b", np.array([], np.int32),
+                                          np.zeros((0, 3)))])
+
+
+def test_node_missing_in_one_step(tmp_job):
+    # узел есть в шаге 1, но исчез в шаге 2 — ошибка, а не тихий пропуск шага
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0), 2: (0, 0, 0)}),
+                           (2, "0.2E-01", {1: (0, 0, 0)})])
+    with pytest.raises(KeyError, match="отсутствуют в блоке"):
+        check_job(tmp_job.inp, tmp_job.frd)
+
+
+def test_cli_out_dir_prints_report_paths(tmp_job, capsys):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (5e-4, 0, 0)})])
+    assert cli_main([str(tmp_job.inp), "--out-dir", str(tmp_job.root / "rep")]) == 0
+    assert "отчёт:" in capsys.readouterr().out
+
+
+# --- BOM, кодировки, запятые, *INCLUDE, бинарный .frd (аудит 2026-10-06) ---
+
+def test_parse_bom_equation_first_line(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_bytes(b"\xef\xbb\xbf*EQUATION\n1\n1, 1, 2.0\n")   # BOM + карточка 1-й строкой
+    assert parse_equations(p)[0].terms == ((1, 1, 2.0),)
+
+
+def test_parse_cp1251_russian_comments(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_bytes("*EQUATION\n** связи грань X\n1\n1, 1, 2.0\n".encode("cp1251"))
+    assert parse_equations(p)[0].terms == ((1, 1, 2.0),)
+
+
+def test_parse_trailing_and_double_commas(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n2\n1, 1, 1.0,,\n2, 1, -1.0,\n", encoding="utf-8")
+    assert parse_equations(p)[0].terms == ((1, 1, 1.0), (2, 1, -1.0))
+
+
+def test_parse_extra_tokens_raise(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n1\n1, 1, 1.0, 2, 2, 5.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="лишних"):
+        parse_equations(p)
+
+
+def test_parse_nonfinite_coef_raises(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n1\n1, 1, nan\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="не конечен"):
+        parse_equations(p)
+
+
+def test_include_equations_parsed(tmp_path):
+    (tmp_path / "pbc.inc").write_text("*EQUATION\n2\n1, 1, 1.0, 2, 1, -1.0\n", encoding="utf-8")
+    main = tmp_path / "job.inp"
+    main.write_text("*STEP\n*INCLUDE\npbc.inc\n*END STEP\n", encoding="utf-8")
+    assert parse_equations(main)[0].terms == ((1, 1, 1.0), (2, 1, -1.0))
+
+
+def test_include_input_param_and_nested(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "leaf.inc").write_text(
+        "*EQUATION\n1\n7, 2, 3.0\n", encoding="utf-8")
+    (tmp_path / "sub" / "mid.inc").write_text("*INCLUDE\nleaf.inc\n", encoding="utf-8")
+    main = tmp_path / "job.inp"
+    main.write_text("*INCLUDE, INPUT=sub/mid.inc\n", encoding="utf-8")
+    assert parse_equations(main)[0].terms == ((7, 2, 3.0),)
+
+
+def test_include_cycle_raises(tmp_path):
+    a = tmp_path / "a.inp"
+    b = tmp_path / "b.inp"
+    a.write_text("*INCLUDE\nb.inp\n", encoding="utf-8")
+    b.write_text("*INCLUDE\na.inp\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="цикл"):
+        parse_equations(a)
+
+
+def test_include_missing_raises(tmp_path):
+    p = tmp_path / "job.inp"
+    p.write_text("*INCLUDE\nnope.inc\n", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="nope.inc"):
+        parse_equations(p)
+
+
+def test_include_without_name_raises(tmp_path):
+    p = tmp_path / "job.inp"
+    p.write_text("*INCLUDE\n", encoding="utf-8")          # EOF сразу за карточкой
+    with pytest.raises(ValueError, match="без имени файла"):
+        parse_equations(p)
+
+
+def test_include_too_deep_raises(tmp_path):
+    for i in range(35):                                   # цепочка длиннее лимита
+        (tmp_path / f"f{i}.inp").write_text(f"*INCLUDE\nf{i + 1}.inp\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="глубина"):
+        parse_equations(tmp_path / "f0.inp")
+
+
+def test_cli_na_out_dir_prints_report(tmp_job, capsys):
+    make_inp(tmp_job.inp, [])
+    rc = cli_main([str(tmp_job.inp), "--out-dir", str(tmp_job.root)])
+    out = capsys.readouterr().out
+    assert rc == 0 and "N/A" in out and "отчёт:" in out
+
+
+def test_gate_default_tol_and_str_paths(tmp_job):
+    # rel = 1.5e-3: FAIL при default 1e-3 (мутация default 2e-3 давала бы PASS)
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1.0, 0, 0), 2: (0.9985, 0, 0)})])
+    assert check_job(str(tmp_job.inp)).verdict == "FAIL"   # str-путь, frd по умолчанию
+    assert cli_main([str(tmp_job.inp)]) == 1               # CLI default tol тот же
+
+
+def test_gate_tol_boundary_equality_pass(tmp_job):
+    # rel ровно = tol (0.5, точные степени двойки): нестрогое '<=' — PASS
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1.0, 0, 0), 2: (0.5, 0, 0)})])
+    assert check_job(tmp_job.inp, tmp_job.frd, tol=0.5).verdict == "PASS"
+
+
+# --- мутационные киллеры (добивание выживших мутантов) ---
+
+def test_report_top_worst_capped_at_10(tmp_job):
+    eqs = [[(i, 1, 1.0), (i + 20, 1, -1.0)] for i in range(1, 13)]   # 12 уравнений
+    make_inp(tmp_job.inp, eqs)
+    disp = {n: (1e-3, 0, 0) for n in list(range(1, 13)) + list(range(21, 33))}
+    disp[25] = (2e-3, 0, 0)                    # уравнение #5 (индекс 4) — худшее
+    make_frd(tmp_job.frd, [(1, "0.1E-01", disp)])
+    v = check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
+    data = json.loads(v.report_paths[0].read_text(encoding="utf-8"))
+    assert len(data["worst_equations"]) == 10          # не 11/12
+    assert data["worst_equations"][0]["index"] == 4
+
+
+def test_na_report_zero_equations(tmp_job):
+    make_inp(tmp_job.inp, [])
+    v = check_job(tmp_job.inp, out_dir=tmp_job.root)
+    data = json.loads(v.report_paths[0].read_text(encoding="utf-8"))
+    assert data["n_equations"] == 0 and data["worst_equations"] == []
+
+
+def test_floor_abs_is_field_eps(tmp_job):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1e-3, 0, 0), 2: (1e-3, 0, 0)})])
+    v = check_job(tmp_job.inp, tmp_job.frd)
+    s = v.result.steps[0]
+    assert s.floor_abs == pytest.approx(5e-6 * 1e-3)   # пол = E12.5 * max|u|
+
+
+def test_frd_fallback_misaligned_node(tmp_job):
+    # узел не в I10-колонке: позиционный срез падает, split-fallback спасает
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {7: (2e-3, 0, 0)})])
+    lines = [ln.replace(ln, " -1 7 2.000000E-03 0.000000E+00 0.000000E+00")
+             if ln.startswith(" -1") else ln
+             for ln in tmp_job.frd.read_text(encoding="utf-8").splitlines()]
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.nodes.tolist() == [7] and blk.u[0, 0] == pytest.approx(2e-3, abs=1e-9)
+
+
+def test_frd_fallback_extra_token_ignored(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {7: (2e-3, 0, 0)})])
+    lines = [ln.replace(ln, " -1 7 2.000000E-03 0.000000E+00 0.000000E+00 extra")
+             if ln.startswith(" -1") else ln
+             for ln in tmp_job.frd.read_text(encoding="utf-8").splitlines()]
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.nodes.tolist() == [7]                    # 6-й токен игнорируется
+
+
+def test_frd_ten_digit_node(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1234567890: (1e-3, 0, 0)})])
+    make_inp(tmp_job.inp, [[(1234567890, 1, 1.0), (2, 1, 0.0)]])
+    # до 3N проверки: сам номер из колонок 3:13 читается целиком
+    blocks = list(iter_disp_blocks(tmp_job.frd))
+    assert blocks[0].nodes.tolist() == [1234567890]
+
+
+def test_frd_error_line_number(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})])
+    lines = tmp_job.frd.read_text(encoding="utf-8").splitlines()
+    bad = 8                                              # 4 заголовка + 100CL + -4 + -5 + узел
+    lines[bad - 1] = " -1 мусор"
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"строка 8\b"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_frd_block_labels_sequential_without_time(tmp_job):
+    text = make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)}),
+                                  (2, "0.2E-01", {1: (0, 0, 0)})]).read_text()
+    text = text.replace("  100CL  1", "  100CL  ?").replace("  100CL  2", "  100CL  ?")
+    tmp_job.frd.write_text(text, encoding="utf-8")
+    blocks = list(iter_disp_blocks(tmp_job.frd))
+    assert [b.label for b in blocks] == ["block 0", "block 1"]
+
+
+def test_include_depth_boundary(tmp_path):
+    def chain(n):
+        for i in range(n):
+            body = f"*INCLUDE\nf{i + 1}.inp\n" if i < n - 1 else "*EQUATION\n1\n7, 1, 1.0\n"
+            (tmp_path / f"f{i}.inp").write_text(body, encoding="utf-8")
+    chain(33)                                            # глубина 32 — ещё допустимо
+    assert parse_equations(tmp_path / "f0.inp")[0].terms == ((7, 1, 1.0),)
+    chain(34)                                            # глубина 33 — за пределом
+    with pytest.raises(ValueError, match="глубина"):
+        parse_equations(tmp_path / "f0.inp")
+
+
+def test_parse_accepts_str_path(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n1\n1, 1, 2.0\n", encoding="utf-8")
+    assert parse_equations(str(p))[0].terms == ((1, 1, 2.0),)
+
+
+def test_inp_error_line_numbers(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"строка 2\b"):
+        parse_equations(p)
+    p.write_text("*EQUATION\n1\n1, 1, 1.0, 9, 9, 9.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"строка 3\b"):
+        parse_equations(p)
+    p.write_text("*EQUATION\n2\n1, 1, 1.0\n** перенос\n2, 1, -1.0, 7\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"строка 5\b"):
+        parse_equations(p)
+    p.write_text("*EQUATION\n2\n1, 1, 1.0\n*NSET\n2, 1, -1.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"строке 4\b"):
+        parse_equations(p)
+
+
+def test_parse_extra_tokens_7_for_2(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n2\n1, 1, 1.0, 2, 1, -1.0, 7\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="лишних"):
+        parse_equations(p)
+
+
+def test_frd_binary_raises(tmp_job):
+    tmp_job.frd.write_bytes(b"\x00\x01\x02\x00binary junk")
+    with pytest.raises(ValueError, match="бинарный"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_na_writes_report(tmp_job):
+    make_inp(tmp_job.inp, [])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})])
+    v = check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
+    assert v.verdict == "N/A" and len(v.report_paths) == 2
+    data = json.loads(v.report_paths[0].read_text(encoding="utf-8"))
+    assert data["verdict"] == "N/A" and data["steps"] == []
+    assert data["inputs"]["frd_sha256"]           # frd был — хэш в audit_trace
+
+
+def test_na_report_without_frd(tmp_job):
+    make_inp(tmp_job.inp, [])                      # job.frd не создаём
+    v = check_job(tmp_job.inp, out_dir=tmp_job.root)
+    assert v.verdict == "N/A" and len(v.report_paths) == 2
+    data = json.loads(v.report_paths[0].read_text(encoding="utf-8"))
+    assert data["inputs"]["frd"] is None and data["inputs"]["frd_sha256"] is None
+
+
+def test_cli_fail_prints_worst_equation(tmp_job, capsys):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (4e-4, 0, 0)})])
+    assert cli_main([str(tmp_job.inp)]) == 1
+    out = capsys.readouterr().out
+    assert "худшее уравнение" in out and "u(2,1)" in out

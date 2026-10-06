@@ -35,9 +35,18 @@ class DispBlock:
     u: np.ndarray      # float64 (n, 3) — ux, uy, uz
 
 
+def _sniff_binary(frd_path: Path, probe: int = 1 << 16) -> None:
+    """Бинарный .frd (переименованный .fil, output=freq/binary) не содержит
+    '-4  DISP' — без детекта получили бы ложный совет про *NODE FILE."""
+    with Path(frd_path).open("rb") as f:
+        if b"\x00" in f.read(probe):
+            raise ValueError(f"{frd_path}: файл содержит нулевые байты — похоже на "
+                             "бинарный .frd/.fil; инструмент читает только ASCII .frd")
+
+
 def read_ccx_version(frd_path: Path) -> str:
     """Строка версии из заголовка '1UVERSION', например 'Version 2.20'."""
-    with Path(frd_path).open(encoding="utf-8", errors="ignore") as f:
+    with Path(frd_path).open(encoding="utf-8-sig", errors="ignore") as f:
         for line in f:
             if "1UVERSION" in line:
                 return line.split("1UVERSION", 1)[1].strip() or "unknown"
@@ -49,6 +58,7 @@ def read_ccx_version(frd_path: Path) -> str:
 
 def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
     """Все блоки DISP по порядку. Память O(узлов блока), файл читается потоково."""
+    _sniff_binary(frd_path)
     cur_nodes: List[int] = []
     cur_vals: List[Tuple[float, float, float]] = []
     in_disp = False
@@ -67,7 +77,7 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
         block_idx += 1
         return blk
 
-    with Path(frd_path).open(encoding="utf-8", errors="ignore") as f:
+    with Path(frd_path).open(encoding="utf-8-sig", errors="ignore") as f:
         for lineno, line in enumerate(f, 1):
             if line.lstrip().startswith("100CL"):
                 parts = line.split()

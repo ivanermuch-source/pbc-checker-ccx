@@ -5,3 +5,5 @@ build/
 dist/
 .pytest_cache/
 pbc_report_*
+tools/mutants_survived.txt
+.coverage

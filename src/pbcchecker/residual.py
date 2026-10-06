@@ -65,6 +65,9 @@ def compute_residuals(equations: Sequence[Equation], blocks: List[DispBlock]) ->
         raise ValueError("нет уравнений *EQUATION")
     if not blocks:
         raise ValueError("нет блоков DISP в .frd (добавьте '*NODE FILE' с 'U' в deck)")
+    for blk in blocks:
+        if blk.nodes.size == 0:
+            raise ValueError(f"пустой блок DISP '{blk.label}' — нет строк узлов")
 
     union_nodes = np.unique(np.concatenate([b.nodes for b in blocks]))
     term_nodes, dofs, coefs, offsets = term_arrays(equations)
@@ -85,8 +88,6 @@ def compute_residuals(equations: Sequence[Equation], blocks: List[DispBlock]) ->
     steps: List[StepResidual] = []
     eq_max_rel = np.zeros(len(equations), dtype=np.float64)
     for blk in blocks:
-        if blk.nodes.size == 0:
-            raise ValueError(f"пустой блок DISP '{blk.label}' — нет строк узлов")
         so = np.argsort(blk.nodes, kind="stable")
         sorted_b = blk.nodes[so]
         p = np.clip(np.searchsorted(sorted_b, union_nodes), 0, len(sorted_b) - 1)
@@ -98,10 +99,10 @@ def compute_residuals(equations: Sequence[Equation], blocks: List[DispBlock]) ->
             raise KeyError(f"узлы {bad[:10]}{'…' if len(bad) > 10 else ''} из *EQUATION "
                            f"отсутствуют в блоке '{blk.label}'")
         r = np.add.reduceat(coefs * blk.u[mapped, dofs], offsets[:-1])
-        absr = np.abs(r)
-        k = int(np.argmax(absr)) if len(absr) else 0
-        max_abs_u = float(np.abs(blk.u).max()) if blk.u.size else 0.0
-        max_abs_r = float(absr.max()) if len(absr) else 0.0
+        absr = np.abs(r)               # n_equations >= 1, пустые блоки отсечены выше
+        k = int(np.argmax(absr))
+        max_abs_u = float(np.abs(blk.u).max())
+        max_abs_r = float(absr.max())
         denom = max(max_abs_u, 1e-300)
         eq_max_rel = np.maximum(eq_max_rel, absr / denom)
         steps.append(StepResidual(

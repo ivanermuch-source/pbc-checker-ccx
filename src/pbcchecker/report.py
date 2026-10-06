@@ -33,33 +33,38 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def build_report(inp: Path, frd: Path, result: ResidualResult,
+def build_report(inp: Path, frd: Optional[Path], result: Optional[ResidualResult],
                  outcome: GateOutcome, ccx_version: str,
                  equations_rendered: List[str]) -> dict:
-    # топ худших уравнений — по max относительной невязке по всем шагам,
-    # а не по порядку в deck
-    order = sorted(range(result.n_equations),
-                   key=lambda i: result.eq_max_rel[i], reverse=True)[:TOP_WORST]
+    """Отчёт-словарь; result=None для вердикта N/A (frd может отсутствовать)."""
+    if result is not None:
+        # топ худших уравнений — по max относительной невязке по всем шагам,
+        # а не по порядку в deck
+        order = sorted(range(result.n_equations),
+                       key=lambda i: result.eq_max_rel[i], reverse=True)[:TOP_WORST]
+        worst = [{"index": i, "max_rel_residual": result.eq_max_rel[i],
+                  "equation": equations_rendered[i]} for i in order]
+        steps = [asdict(s) for s in result.steps]
+        n_equations, eq_rendered = result.n_equations, equations_rendered
+    else:
+        worst, steps, n_equations, eq_rendered = [], [], 0, []
     return {
         "tool": {"name": "pbcchecker", "version": __version__},
         "date_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "inputs": {"inp": str(inp), "inp_sha256": sha256(inp),
-                   "frd": str(frd), "frd_sha256": sha256(frd)},
+                   "frd": str(frd) if frd else None,
+                   "frd_sha256": sha256(frd) if frd else None},
         "ccx_version": ccx_version,
-        "n_equations": result.n_equations,
-        "equations": equations_rendered,
-        "worst_equations": [
-            {"index": i, "max_rel_residual": result.eq_max_rel[i],
-             "equation": equations_rendered[i]}
-            for i in order
-        ],
+        "n_equations": n_equations,
+        "equations": eq_rendered,
+        "worst_equations": worst,
         "tol_rel": outcome.tol,
         "verdict": outcome.verdict,
         "max_rel_residual": outcome.max_rel_residual,
         "worst_step": outcome.worst_step,
         "worst_equation_index": outcome.worst_eq,
         "sensitivity_floor": outcome.floor_note,
-        "steps": [asdict(s) for s in result.steps],
+        "steps": steps,
     }
 
 
@@ -73,8 +78,9 @@ def write_reports(data: dict, out_dir: Optional[Path], job_stem: str) -> List[Pa
         return written
     now = datetime.now(timezone.utc)
     out_dir.mkdir(parents=True, exist_ok=True)
-    uniq = f"{now:%Y-%m-%d}" if not (out_dir / f"pbc_report_{job_stem}_{now:%Y-%m-%d}.json").exists() \
-        else f"{now:%Y-%m-%d}_{now:%H%M%S}"
+    uniq, n = f"{now:%Y-%m-%d}", 1
+    while (out_dir / f"pbc_report_{job_stem}_{uniq}.json").exists():   # без перезаписи
+        uniq, n = f"{now:%Y-%m-%d}_{now:%H%M%S}" + (f"_{n}" if n > 1 else ""), n + 1
     jpath = out_dir / f"pbc_report_{job_stem}_{uniq}.json"
     jpath.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     written.append(jpath)
@@ -85,6 +91,9 @@ def write_reports(data: dict, out_dir: Optional[Path], job_stem: str) -> List[Pa
 
 
 def to_markdown(d: dict) -> str:
+    frd_sha = d["inputs"]["frd_sha256"]
+    frd_line = (f"- .frd: `{d['inputs']['frd']}` (sha256 `{frd_sha[:16]}…`)"
+                if frd_sha else "- .frd: не найден (N/A)")
     lines = [
         f"# PBC residual check — {d['verdict']}",
         "",
@@ -93,7 +102,7 @@ def to_markdown(d: dict) -> str:
         f"*ccx:* {d['ccx_version']}",
         "",
         f"- .inp: `{d['inputs']['inp']}` (sha256 `{d['inputs']['inp_sha256'][:16]}…`)",
-        f"- .frd: `{d['inputs']['frd']}` (sha256 `{d['inputs']['frd_sha256'][:16]}…`)",
+        frd_line,
         f"- уравнений: {d['n_equations']}, порог (отн.): {d['tol_rel']:g}",
         f"- макс. относительная невязка: **{d['max_rel_residual']:.3e}** "
         f"(шаг «{d['worst_step']}», уравнение {d['worst_equation_index']})",
@@ -106,7 +115,9 @@ def to_markdown(d: dict) -> str:
         lines.append(f"| {s['label']} | {s['max_abs_u']:.3e} | {s['max_abs_residual']:.3e} "
                      f"| {s['max_rel_residual']:.3e} | {s['floor_abs']:.1e} "
                      f"| {s['worst_eq']} | {s['n_nodes']} |")
-    lines += ["", f"## Худшие уравнения (top-{len(d['worst_equations'])} по max|r|/max|u|)", ""]
-    lines += [f"- {w['max_rel_residual']:.3e} `{w['equation']}`"
-              for w in d["worst_equations"]]
+    if d["worst_equations"]:
+        lines += ["", f"## Худшие уравнения (top-{len(d['worst_equations'])} "
+                      "по max|r|/max|u|)", ""]
+        lines += [f"- {w['max_rel_residual']:.3e} `{w['equation']}`"
+                  for w in d["worst_equations"]]
     return "\n".join(lines) + "\n"

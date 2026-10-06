@@ -1,7 +1,7 @@
 """Гейт check_job(): верхний API для CLI и для вызова из АВТОсбор (за флагом-выключателем)."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional
 
@@ -21,6 +21,7 @@ class Verdict:
     n_equations: int
     result: Optional[ResidualResult]
     report_paths: List[Path]
+    worst_equation: str = field(default="")   # render худшего уравнения (для CLI)
 
 
 def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
@@ -29,12 +30,17 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
 
     Семантика: PASS — max относительная невязка ≤ tol на всех шагах;
     FAIL — выше tol хотя бы на одном; N/A — в deck нет *EQUATION (прогон без PBC).
+    N/A тоже пишет отчёт при заданном out_dir — audit_trace без дыр.
     """
     inp = Path(inp)
     frd = Path(frd) if frd else inp.with_suffix(".frd")
     equations = parse_equations(inp)
     if not equations:
-        return Verdict(None, "N/A", 0.0, "", -1, 0, None, [])
+        outcome = GateOutcome("N/A", tol, 0.0, "", -1, "")
+        data = build_report(inp, frd if frd.exists() else None, None, outcome,
+                            read_ccx_version(frd) if frd.exists() else "unknown", [])
+        paths = write_reports(data, Path(out_dir) if out_dir else None, inp.stem)
+        return Verdict(None, "N/A", 0.0, "", -1, 0, None, paths)
     if not frd.exists():
         raise FileNotFoundError(f"{frd}: нет файла результатов (.frd). "
                                 f"Добавьте в deck '*NODE FILE' + 'U' и перезапустите ccx.")
@@ -43,6 +49,7 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
     result = compute_residuals(equations, blocks)
     worst = max(result.steps, key=lambda s: s.max_rel_residual)
     passed = worst.max_rel_residual <= tol
+    worst_idx = max(range(len(equations)), key=lambda i: result.eq_max_rel[i])
     floor_note = (f"ASCII .frd хранит перемещения в E12.5 — сертифицируемый уровень "
                   f"≈{worst.floor_abs:.1e} абс. для этого шага; невязки ниже пола "
                   f"неотличимы от шума формата")
@@ -53,4 +60,5 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
                         [eq.render() for eq in equations])
     paths = write_reports(data, Path(out_dir) if out_dir else None, inp.stem)
     return Verdict(passed, verdict, worst.max_rel_residual, worst.label,
-                   worst.worst_eq, len(equations), result, paths)
+                   worst.worst_eq, len(equations), result, paths,
+                   equations[worst_idx].render())

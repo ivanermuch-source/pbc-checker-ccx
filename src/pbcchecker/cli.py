@@ -15,6 +15,13 @@ from .gate import check_job
 
 
 def main(argv=None) -> int:
+    # кириллица/«…» в сообщениях при редиректе в файл с иной кодировкой
+    # (например, cp1252 в CI) не должна ронять прогон кодом 1 «как FAIL»
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(
         prog="pbc-check",
         description="Проверка PBC-невязок *EQUATION по DISP из .frd (CalculiX)")
@@ -38,11 +45,15 @@ def main(argv=None) -> int:
 
     if v.verdict == "N/A":
         print("N/A: в deck нет *EQUATION — проверка PBC неприменима.")
+        for p in v.report_paths:
+            print(f"отчёт: {p}")
         return 0
     status = "PASS" if v.passed else "FAIL"
     print(f"{status}: max относительная невязка {v.max_rel_residual:.3e} "
           f"(порог {args.tol:g}, шаг «{v.worst_step}», уравнение {v.worst_eq}, "
           f"всего уравнений {v.n_equations})")
+    if v.worst_equation:
+        print(f"худшее уравнение: {v.worst_equation}")
     for p in v.report_paths:
         print(f"отчёт: {p}")
     return 0 if v.passed else 1

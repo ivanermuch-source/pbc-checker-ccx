@@ -30,3 +30,4 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["e2e: сквозные прогоны CLI через subprocess (медленные)"]
