@@ -591,6 +591,109 @@ def test_parse_extra_tokens_7_for_2(tmp_path):
         parse_equations(p)
 
 
+# --- векторный парсер .frd: точность побитово == float() ---
+
+def _write_raw_frd(path, node_lines):
+    out = ["    1C", "    1UVERSION           Version 2.20",
+           "  100CL  1  0.1E-01", "    -4  DISP        4    1",
+           "    -5  D1          1    2    3"] + node_lines + ["    -3"]
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+def test_frd_glued_fields_bitwise(tmp_job):
+    # слипшиеся поля реального ccx ("E+00-1.30000E-03"), границы ldexp-схемы
+    # (E-18/E+10) и экстремум E+99 (блок уходит в построчный fallback)
+    _write_raw_frd(tmp_job.frd, [
+        " -1         3 0.00000E+00-1.30000E-03 0.00000E+00",
+        " -1        93-1.30000E-03 0.00000E+00 9.99999E+99",
+        " -1 123456789 1.00000E+00-2.50000E-01-3.75000E-05",
+        " -1         4 3.00000E-04 1.23456E+10-9.99999E-18",
+    ])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.nodes.tolist() == [3, 93, 123456789, 4]
+    # побитовое равенство float() — без approx: сертифицируем разбор
+    assert blk.u.tolist() == [
+        [0.0, float("-1.30000E-03"), 0.0],
+        [float("-1.30000E-03"), 0.0, float("9.99999E+99")],
+        [1.0, float("-2.50000E-01"), float("-3.75000E-05")],
+        [float("3.00000E-04"), float("1.23456E+10"), float("-9.99999E-18")],
+    ]
+
+
+def test_frd_vector_matches_float_on_fixture(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {n: (n * 1.7e-4, -n * 3.1e-5, 0.0)
+                                           for n in range(1, 60)})])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    manual = [(int(l[3:13]), float(l[13:25]), float(l[25:37]))
+              for l in tmp_job.frd.read_text(encoding="utf-8").splitlines()
+              if l.startswith(" -1") and len(l) == 49]   # splitlines без "\n"
+    assert blk.nodes.tolist() == [m[0] for m in manual]
+    assert blk.u[:, 0].tolist() == [m[1] for m in manual]   # побитово
+    assert blk.u[:, 1].tolist() == [m[2] for m in manual]
+
+
+def test_frd_nonuniform_block_fallback(tmp_job):
+    # блок из строк разной длины — построчный fallback с тем же результатом;
+    # 10-значный узел проверяет I10-срез fallback'а
+    _write_raw_frd(tmp_job.frd, [
+        " -1         5  1.00000E-03  0.00000E+00  0.00000E+00",   # поля по 13
+        " -112345678901.00000E-03 0.00000E+00 0.00000E+00",        # узел I10 + поля по 12
+        " -1         6  2.00000E-03  0.00000E+00  0.00000E+00",
+    ])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.nodes.tolist() == [5, 1234567890, 6]
+    assert blk.u[:, 0].tolist() == [1e-3, 1e-3, 2e-3]
+
+
+def test_frd_torture_bitwise(tmp_job):
+    """Значения, накрывающие каждый вес мантиссы/экспоненты векторного
+    парсера и границы точной ldexp-схемы (k in [-22, 13]): любые мутации
+    весов/таблиц дают неверные числа, а не тихий fallback."""
+    rows = [
+        (1234567890, "1.23456E+01", "9.87654E-02", "1.23456E+12"),
+        (1023456789, "9.87654E+18", "1.23456E+10", "-9.87654E-07"),
+        (7,          "9.99999E-17", "1.23456E-17", "1.00000E+05"),
+    ]
+    _write_raw_frd(tmp_job.frd,
+                   [" -1%10d%12s%12s%12s" % (n, a, b, c) for n, a, b, c in rows])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.nodes.tolist() == [r[0] for r in rows]
+    want = [[float(r[1]), float(r[2]), float(r[3])] for r in rows]
+    assert blk.u.tolist() == want          # побитово, включая границы k=-22/+13 и k=0
+
+
+def test_frd_all_exponents_bitwise(tmp_job):
+    """Свойство: каждая экспонента E12.5 из точного диапазона векторного
+    парсера (e in [-17, 18]) даёт биты float()."""
+    rows = []
+    for i, e in enumerate(range(-17, 19)):        # 36 экспонент, разные мантиссы
+        m = 100000 + (i * 123457) % 900000        # взаимно просто с 10 — без нулей
+        s = "%c%d.%05dE%c%02d" % (" -"[i % 2], m // 100000, m % 100000,
+                                  "+-"[e < 0], abs(e))
+        rows.append((i + 1, s))
+    _write_raw_frd(tmp_job.frd,
+                   [" -1%10d%12s%12s%12s" % (n, a, "0.00000E+00", "0.00000E+00")
+                    for n, a in rows])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    for i, (n, s) in enumerate(rows):
+        assert blk.u[i, 0].hex() == float(s).hex(), (s, blk.u[i, 0].hex())
+        assert blk.u[i, 1].hex() == float("0.00000E+00").hex()   # +0.0
+        if i % 2:
+            assert blk.u[i, 2].hex() == float("0.00000E+00").hex()
+
+
+def test_frd_negative_zero_and_plus_sign(tmp_job):
+    # -0.00000E+00: биты знака совпадают со strtod; '+' в мантиссе — нестандарт,
+    # векторный парсер отвергает, fallback разбирает
+    _write_raw_frd(tmp_job.frd, [
+        " -1         1-0.00000E+00 0.00000E+00 0.00000E+00",
+        " -1         2+1.00000E+00 0.00000E+00 0.00000E+00",
+    ])
+    blk = next(iter(iter_disp_blocks(tmp_job.frd)))
+    assert blk.u[0, 0].hex() == float("-0.00000E+00").hex()      # -0.0, не +0.0
+    assert blk.u[1, 0] == 1.0
+
+
 def test_frd_binary_raises(tmp_job):
     tmp_job.frd.write_bytes(b"\x00\x01\x02\x00binary junk")
     with pytest.raises(ValueError, match="бинарный"):

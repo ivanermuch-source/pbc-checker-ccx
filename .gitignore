@@ -7,3 +7,4 @@ dist/
 pbc_report_*
 tools/mutants_survived.txt
 .coverage
+tools/_bench/

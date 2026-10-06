@@ -35,13 +35,16 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
     inp = Path(inp)
     frd = Path(frd) if frd else inp.with_suffix(".frd")
     equations = parse_equations(inp)
+    frd_exists = frd.exists()
     if not equations:
-        outcome = GateOutcome("N/A", tol, 0.0, "", -1, "")
-        data = build_report(inp, frd if frd.exists() else None, None, outcome,
-                            read_ccx_version(frd) if frd.exists() else "unknown", [])
-        paths = write_reports(data, Path(out_dir) if out_dir else None, inp.stem)
+        paths: List[Path] = []
+        if out_dir is not None:   # sha256/отчёт — только когда нужен audit_trace
+            outcome = GateOutcome("N/A", tol, 0.0, "", -1, "")
+            data = build_report(inp, frd if frd_exists else None, None, outcome,
+                                read_ccx_version(frd) if frd_exists else "unknown", [])
+            paths = write_reports(data, Path(out_dir), inp.stem)
         return Verdict(None, "N/A", 0.0, "", -1, 0, None, paths)
-    if not frd.exists():
+    if not frd_exists:
         raise FileNotFoundError(f"{frd}: нет файла результатов (.frd). "
                                 f"Добавьте в deck '*NODE FILE' + 'U' и перезапустите ccx.")
 
@@ -50,15 +53,17 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
     worst = max(result.steps, key=lambda s: s.max_rel_residual)
     passed = worst.max_rel_residual <= tol
     worst_idx = max(range(len(equations)), key=lambda i: result.eq_max_rel[i])
-    floor_note = (f"ASCII .frd хранит перемещения в E12.5 — сертифицируемый уровень "
-                  f"≈{worst.floor_abs:.1e} абс. для этого шага; невязки ниже пола "
-                  f"неотличимы от шума формата")
     verdict = "PASS" if passed else "FAIL"
-    outcome = GateOutcome(verdict, tol, worst.max_rel_residual, worst.label,
-                          worst.worst_eq, floor_note)
-    data = build_report(inp, frd, result, outcome, read_ccx_version(frd),
-                        [eq.render() for eq in equations])
-    paths = write_reports(data, Path(out_dir) if out_dir else None, inp.stem)
+    paths = []
+    if out_dir is not None:       # рендер всех уравнений + sha256 — только для отчёта
+        floor_note = (f"ASCII .frd хранит перемещения в E12.5 — сертифицируемый уровень "
+                      f"≈{worst.floor_abs:.1e} абс. для этого шага; невязки ниже пола "
+                      f"неотличимы от шума формата")
+        outcome = GateOutcome(verdict, tol, worst.max_rel_residual, worst.label,
+                              worst.worst_eq, floor_note)
+        data = build_report(inp, frd, result, outcome, read_ccx_version(frd),
+                            [eq.render() for eq in equations])
+        paths = write_reports(data, Path(out_dir), inp.stem)
     return Verdict(passed, verdict, worst.max_rel_residual, worst.label,
                    worst.worst_eq, len(equations), result, paths,
                    equations[worst_idx].render())
