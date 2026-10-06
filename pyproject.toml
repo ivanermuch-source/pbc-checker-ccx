@@ -9,7 +9,7 @@ description = "PBC residual checker for CalculiX: verifies *EQUATION periodic co
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-authors = [{ name = "pbcchecker contributors" }]
+authors = [{ name = "ivanermuch-source" }]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
