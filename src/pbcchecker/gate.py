@@ -10,8 +10,6 @@ from .inp_equations import Equation, parse_equations
 from .report import GateOutcome, build_report, write_reports
 from .residual import ResidualResult, compute_residuals
 
-WARN_REL = 1e-5   # выше пола формата, но ниже порога — жёлтая зона
-
 
 @dataclass(frozen=True)
 class Verdict:

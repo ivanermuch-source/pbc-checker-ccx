@@ -9,12 +9,26 @@
     93, 3, 1.0, 49070, 3, -1.0
 
 Строки с '**' — комментарии, имена карточек нечувствительны к регистру.
+Файл читается потоково, без загрузки в память (PBC-deck'и бывают сотни MB).
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple
+
+# фортран-экспонента без 'E' ('1.0-100') вставляется перед знаком степени
+_EXP_FIX = re.compile(r"(?<=[\d.])([+-])(?=\d+$)")
+
+
+def to_float(tok: str) -> float:
+    """float() с поддержкой фортран-экспонент: '1.0-100', '2.5+3', '1.0D+00'."""
+    s = tok.strip().replace("D", "E").replace("d", "E")
+    try:
+        return float(s)
+    except ValueError:
+        return float(_EXP_FIX.sub(r"E\1", s))
 
 
 @dataclass(frozen=True)
@@ -32,46 +46,75 @@ class Equation:
 
 
 def parse_equations(inp_path: Path) -> List[Equation]:
-    """Все *EQUATION deck'а. Уравнения без термов или с мусором — ошибка ValueError
-    с номером строки, чтобы испорченный .inp не превращался в тихий PASS."""
-    lines = Path(inp_path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    """Все *EQUATION deck'а. Уравнения без термов, с мусором или оборванные
+    следующей *-карточкой — ValueError с номером строки, чтобы испорченный
+    .inp не превращался в тихий PASS."""
     equations: List[Equation] = []
-    i, n = 0, len(lines)
-    while i < n:
-        stripped = lines[i].strip()
-        i += 1
-        if not stripped.startswith("*") or stripped.startswith("**"):
-            continue
-        if stripped.split(",")[0].strip().upper() != "*EQUATION":
-            continue
-        # следующая значимая строка — число термов
-        while i < n and (not lines[i].strip() or lines[i].strip().startswith("**")):
-            i += 1
-        if i >= n:
-            raise ValueError(f"{inp_path}: *EQUATION без строки с числом термов (строка {i})")
-        try:
-            n_terms = int(lines[i].split(",")[0].strip())
-        except ValueError as e:
-            raise ValueError(f"{inp_path}: число термов не целое: {lines[i]!r} (строка {i+1})") from e
-        i += 1
-        # собираем 3N числовых токенов с переносами между строками
-        tokens: List[str] = []
-        while i < n and len(tokens) < 3 * n_terms:
-            s = lines[i].strip()
-            i += 1
-            if not s or s.startswith("**"):
+    with Path(inp_path).open(encoding="utf-8", errors="ignore") as f:
+        lines = enumerate(f, 1)
+        for lineno, raw in lines:
+            s = raw.strip()
+            if not s.startswith("*") or s.startswith("**"):
                 continue
-            tokens.extend(s.split(","))
-        if len(tokens) < 3 * n_terms:
-            raise ValueError(
-                f"{inp_path}: *EQUATION #{len(equations)}: термов {len(tokens)//3} из {n_terms}")
-        terms = []
-        for k in range(n_terms):
-            node = int(tokens[3 * k]); dof = int(tokens[3 * k + 1]); coef = float(tokens[3 * k + 2])
-            if not (1 <= dof <= 3):
-                raise ValueError(
-                    f"{inp_path}: *EQUATION #{len(equations)}: dof={dof} вне 1..3 "
-                    "(инструмент проверяет поступательные DOF твёрдого тела)")
-            terms.append((node, dof, coef))
-        equations.append(Equation(len(equations), tuple(terms)))
+            if s.split(",")[0].strip().upper() != "*EQUATION":
+                continue
+            equations.append(_parse_one(inp_path, lines, lineno, len(equations)))
     return equations
+
+
+def _parse_one(inp_path: Path, lines, card_lineno: int, eq_idx: int) -> Equation:
+    """Одно уравнение; lines — общий итератор (номер строки, строка), уже
+    позиционирован после карточки *EQUATION в строке card_lineno."""
+    # следующая значимая строка — число термов
+    n_terms, terms_lineno = None, card_lineno
+    for lineno, raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("**"):
+            continue
+        try:
+            n_terms = int(s.split(",")[0])
+        except ValueError as e:
+            raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: число термов не целое: "
+                             f"{s!r} (строка {lineno})") from e
+        terms_lineno = lineno
+        break
+    if n_terms is None:
+        raise ValueError(f"{inp_path}: *EQUATION #{eq_idx} без строки с числом термов "
+                         f"(карточка в строке {card_lineno}, конец файла)")
+    if n_terms < 1:
+        raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: число термов {n_terms} < 1 "
+                         f"(строка {terms_lineno})")
+    # собираем 3N числовых токенов с переносами между строками;
+    # *-карточка до набора 3N токенов = оборванное уравнение, а не данные
+    tokens: List[str] = []
+    for lineno, raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("**"):
+            continue
+        if s.startswith("*"):
+            raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: термов {len(tokens) // 3} "
+                             f"из {n_terms}, а в строке {lineno} началась карточка "
+                             f"{s.split(',')[0]}")
+        tokens.extend(t.strip() for t in s.split(","))
+        if len(tokens) >= 3 * n_terms:
+            break
+    if len(tokens) < 3 * n_terms:
+        raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: термов {len(tokens) // 3} "
+                         f"из {n_terms} (карточка в строке {card_lineno}, конец файла)")
+    terms = []
+    for k in range(n_terms):
+        node_s, dof_s, coef_s = tokens[3 * k:3 * k + 3]
+        try:
+            node = int(node_s)
+            dof = int(dof_s)
+            coef = to_float(coef_s)
+        except ValueError as e:
+            raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: терм #{k + 1} "
+                             f"«{node_s},{dof_s},{coef_s}» не разбирается "
+                             f"(карточка в строке {card_lineno})") from e
+        if not (1 <= dof <= 3):
+            raise ValueError(
+                f"{inp_path}: *EQUATION #{eq_idx}: dof={dof} вне 1..3 "
+                "(инструмент проверяет поступательные DOF твёрдого тела)")
+        terms.append((node, dof, coef))
+    return Equation(eq_idx, tuple(terms))

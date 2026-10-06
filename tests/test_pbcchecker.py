@@ -148,3 +148,120 @@ def test_cli_exit_codes(tmp_job):
     assert cli_main([str(tmp_job.inp), "--frd", str(tmp_job.root / "nope.frd")]) == 0  # N/A раньше поиска
     make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
     assert cli_main([str(tmp_job.inp), "--frd", str(tmp_job.root / "nope.frd")]) == 2
+
+
+def test_cli_tol_flag(tmp_job):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (4.9e-4, 0, 0)})])  # ~2e-2
+    assert cli_main([str(tmp_job.inp)]) == 1                 # порог по умолчанию 1e-3
+    assert cli_main([str(tmp_job.inp), "--tol", "1e-1"]) == 0
+
+
+def test_cli_rejects_nonpositive_tol(tmp_job):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    for bad in ("0", "-1e-3", "nan"):
+        with pytest.raises(SystemExit) as ei:
+            cli_main([str(tmp_job.inp), "--tol", bad])
+        assert ei.value.code == 2
+
+
+def test_cli_unexpected_error_exit2(tmp_job):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    # каталог вместо .frd -> OSError (PermissionError/IsADirectoryError) -> код 2, не traceback
+    assert cli_main([str(tmp_job.inp), "--frd", str(tmp_job.root)]) == 2
+
+
+def test_parse_zero_and_negative_terms(tmp_path):
+    for n in ("0", "-2"):
+        p = tmp_path / "x.inp"
+        p.write_text(f"*EQUATION\n{n}\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="< 1"):
+            parse_equations(p)
+
+
+def test_parse_equation_interrupted_by_card(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n2\n1, 1, 1.0\n*NSET, N=X\n2, 1, -1.0\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="карточка"):
+        parse_equations(p)
+
+
+def test_parse_garbage_token(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n1\n1, 1, абырвалг\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="не разбирается"):
+        parse_equations(p)
+
+
+def test_to_float_fortran_exponents():
+    from pbcchecker.inp_equations import to_float
+    assert to_float("1.0-100") == pytest.approx(1e-100)   # фортран-экспонента без E
+    assert to_float("2.5+3") == pytest.approx(2500.0)
+    assert to_float("1.0D+00") == 1.0                      # фортранское D
+    assert to_float("-1.3E-03") == pytest.approx(-1.3e-3)
+
+
+def test_parse_fortran_coef(tmp_path):
+    p = tmp_path / "x.inp"
+    p.write_text("*EQUATION\n2\n1, 1, 1.0-3, 2, 1, -1.0D+00\n", encoding="utf-8")
+    parsed = parse_equations(p)
+    assert parsed[0].terms == ((1, 1, 1e-3), (2, 1, -1.0))
+
+
+def test_frd_unterminated_disp_raises(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)}), (2, "0.2E-01", {1: (0, 0, 0)})])
+    text = tmp_job.frd.read_text(encoding="utf-8").replace("    -3\n", "", 1)
+    tmp_job.frd.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="не закрыт"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_frd_eof_without_close_recovers(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (1e-3, 0, 0)})])
+    text = tmp_job.frd.read_text(encoding="utf-8").replace("    -3\n", "", 1)
+    tmp_job.frd.write_text(text, encoding="utf-8")
+    blocks = list(iter_disp_blocks(tmp_job.frd))
+    assert len(blocks) == 1 and blocks[0].nodes.tolist() == [1]
+
+
+def test_frd_empty_disp_block_raises(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})])
+    lines = [ln for ln in tmp_job.frd.read_text(encoding="utf-8").splitlines()
+             if not ln.startswith(" -1")]
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="пустой блок"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_frd_bad_node_line_raises(tmp_job):
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (0, 0, 0)})])
+    lines = [ln.replace(ln, " -1  мусор") if ln.startswith(" -1") else ln
+             for ln in tmp_job.frd.read_text(encoding="utf-8").splitlines()]
+    tmp_job.frd.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="нечитаемая"):
+        list(iter_disp_blocks(tmp_job.frd))
+
+
+def test_report_worst_equations_sorted(tmp_job):
+    make_inp(tmp_job.inp, [
+        [(1, 1, 1.0), (2, 1, -1.0)],   # чистое
+        [(3, 1, 1.0), (4, 1, -1.0)],   # испорченное — должно быть худшим №1
+    ])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (5e-4, 0, 0),
+                                           3: (1e-3, 0, 0), 4: (9.9e-4, 0, 0)})])
+    v = check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
+    data = json.loads(v.report_paths[0].read_text(encoding="utf-8"))
+    assert data["worst_equations"][0]["index"] == 1
+    assert data["worst_equations"][0]["max_rel_residual"] == pytest.approx(1e-2, rel=0.01)
+    md = v.report_paths[1].read_text(encoding="utf-8")
+    assert "u(4,1)" in md.split("## Худшие")[1]   # в топе — термы испорченного уравнения
+    assert "u(2,1)" in md.split("## Худшие")[1]
+
+
+def test_reports_same_day_not_overwritten(tmp_job):
+    make_inp(tmp_job.inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
+    make_frd(tmp_job.frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (5e-4, 0, 0)})])
+    check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
+    check_job(tmp_job.inp, tmp_job.frd, out_dir=tmp_job.root)
+    reports = sorted(tmp_job.root.glob("pbc_report_job_*.json"))
+    assert len(reports) == 2   # append-only: второй прогон не затёр первый

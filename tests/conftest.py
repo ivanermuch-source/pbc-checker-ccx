@@ -8,7 +8,7 @@ import pytest
 def make_inp(path, equations, extra="*BOUNDARY\nALL,1,3,0.0\n"):
     """equations: список списков термов (node, dof, coef)."""
     lines = ["*NODE, NSET=ALL"]
-    lines += [f"{n}, {n * 0 + n % 4}, {n % 3}, 0.0" for n in range(1, 6)]
+    lines += [f"{n}, {n % 4}, {n % 3}, 0.0" for n in range(1, 6)]
     lines += ["*ELEMENT, TYPE=C3D8, ELSET=EALL", "1, 1, 2, 3, 4, 5, 4, 3, 2", extra or ""]
     for terms in equations:
         lines.append("*EQUATION")
@@ -34,7 +34,7 @@ def make_frd(path, steps, version="Version 2.20"):
         for node, (ux, uy, uz) in disp.items():
             out.append(" -1%10d%12.5E%12.5E%12.5E" % (node, ux, uy, uz))
         out.append("    -3")
-    path.write_text("\n".join(out) + "\n", encoding="utf-8", errors="ignore")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
     return path
 
 

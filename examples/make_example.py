@@ -43,6 +43,6 @@ for step_no, time_s, disp in STEPS:
     out.append("    -3")
 (HERE / "demo_job.frd").write_text("\n".join(out) + "\n", encoding="utf-8")
 
-v = check_job(HERE / "demo_job.inp", HERE / "demo_job.frd", out_dir=HERE)
+v = check_job(HERE / "demo_job.inp", HERE / "demo_job.frd", out_dir=HERE / "reports")
 print(f"{v.verdict}: max_rel={v.max_rel_residual:.3e}, уравнений {v.n_equations}")
 print("отчёты:", *[str(p) for p in v.report_paths], sep="\n  ")

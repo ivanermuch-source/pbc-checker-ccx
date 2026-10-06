@@ -13,6 +13,8 @@
 (колонки 13+12k : 25+12k). При переполнении формата поля слипаются —
 тогда откат на split() (тот же приём, что в stellaraster/homogenization/ccx_dat.py).
 DISPI (мнимая часть в частотных задачах) пропускается.
+Битая структура (незакрытый '-3', пустой блок, нечитаемая строка узла) —
+ValueError с номером строки, а не тихая потеря данных.
 """
 from __future__ import annotations
 
@@ -21,6 +23,8 @@ from pathlib import Path
 from typing import Iterator, List, Tuple
 
 import numpy as np
+
+from .inp_equations import to_float
 
 
 @dataclass(frozen=True)
@@ -37,7 +41,8 @@ def read_ccx_version(frd_path: Path) -> str:
         for line in f:
             if "1UVERSION" in line:
                 return line.split("1UVERSION", 1)[1].strip() or "unknown"
-            if line.startswith("-4") or line.lstrip().startswith("-4"):
+            st = line.lstrip()
+            if st.startswith("-4") or st.startswith("100CL"):
                 break  # заголовок кончился
     return "unknown"
 
@@ -63,7 +68,7 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
         return blk
 
     with Path(frd_path).open(encoding="utf-8", errors="ignore") as f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             if line.lstrip().startswith("100CL"):
                 parts = line.split()
                 try:
@@ -76,13 +81,22 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
                 head = line.split()
                 name = head[1] if len(head) > 1 else ""
                 if name == "DISP":
+                    if in_disp and cur_nodes:
+                        raise ValueError(f"{frd_path}: строка {lineno}: блок DISP "
+                                         f"(step {step}) не закрыт '-3'")
                     cur_nodes, cur_vals = [], []
                     in_disp = True
-                elif in_disp and name != "DISP":
+                elif in_disp:
                     # другой датасет начался без завершения DISP (нестандарт) — закрыть
-                    yield emit()
+                    if cur_nodes:
+                        yield emit()
+                    else:
+                        in_disp = False
                 continue
             if in_disp and line.lstrip().startswith("-3"):
+                if not cur_nodes:
+                    raise ValueError(f"{frd_path}: строка {lineno}: пустой блок DISP "
+                                     "(нет строк узлов '-1')")
                 yield emit()
                 continue
             if in_disp and line.lstrip().startswith("-1"):
@@ -92,10 +106,15 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
                 except ValueError:
                     parts = line.split()
                     if len(parts) < 5:
-                        continue
-                    node = int(parts[1])
-                    vals = tuple(float(v) for v in parts[2:5])
+                        raise ValueError(f"{frd_path}: строка {lineno}: нечитаемая строка "
+                                         f"узла DISP: {line.rstrip()!r}") from None
+                    try:
+                        node = int(parts[1])
+                        vals = tuple(to_float(v) for v in parts[2:5])
+                    except ValueError:
+                        raise ValueError(f"{frd_path}: строка {lineno}: нечитаемая строка "
+                                         f"узла DISP: {line.rstrip()!r}") from None
                 cur_nodes.append(node)
                 cur_vals.append(vals)  # type: ignore[arg-type]
         if in_disp and cur_nodes:
-            yield emit()
+            yield emit()  # EOF вместо '-3' — данные уже собраны, не теряем
