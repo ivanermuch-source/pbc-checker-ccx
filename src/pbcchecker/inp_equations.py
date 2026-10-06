@@ -38,10 +38,12 @@ def to_float(tok: str) -> float:
 
 @dataclass(frozen=True)
 class Equation:
+    """Одно *EQUATION: термы (узел, dof 1-based, коэффициент)."""
     index: int                 # порядковый номер в deck (с 0)
     terms: Tuple[Tuple[int, int, float], ...]  # (узел, dof 1-based, коэф.)
 
     def render(self) -> str:
+        """Человекочитаемый вид: '[i] c*u(node,dof) ± … = 0'."""
         parts = []
         for node, dof, coef in self.terms:
             sign = "+" if coef >= 0 else "-"

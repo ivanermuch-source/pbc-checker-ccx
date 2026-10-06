@@ -1,6 +1,6 @@
 """Потоковое чтение блоков DISP из .frd CalculiX (ASCII, ccx >= 2.8).
 
-Формат блока (проверен на боевых прогонах ccx 2.20, АВТОсбор runs/*/specimen.frd):
+Формат блока (проверен на боевых прогонах ccx 2.20):
 
       1PSTEP                          2
      100CL  1  0.1000000E-01
@@ -12,8 +12,7 @@
 Строка узла: " -1", номер I10 (колонки 3:13), значения 3 x E12.5
 (колонки 13+12k : 25+12k), итого ровно 49 символов + перевод строки.
 Однородный блок парсится векторно (uint8-матрица -> числа, без питоновского
-цикла по строкам); нестандартные строки — построчный разбор со split()-fallback
-(тот же приём, что в stellaraster/homogenization/ccx_dat.py).
+цикла по строкам); нестандартные строки — построчный разбор со split()-fallback.
 DISPI (мнимая часть в частотных задачах) пропускается.
 Битая структура (незакрытый '-3', пустой блок, нечитаемая строка узла) —
 ValueError с номером строки, а не тихая потеря данных.
@@ -42,6 +41,7 @@ _K_MIN, _K_MAX = -22, 13
 
 @dataclass(frozen=True)
 class DispBlock:
+    """Один блок DISP: узлы и перемещения одного шага из .frd."""
     step: int          # номер шага из строки 100CL; 0 если не найден
     label: str         # "step 1 (time 0.1000000E-01)" или "block 3"
     nodes: np.ndarray  # int32 (n,) — возрастающие по файлу, без сортировки
@@ -144,7 +144,7 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
     block_idx = 0
 
     def fallback_lines() -> None:
-        """Построчный разбор буфера raw (нестандартный блок) с номерами строк."""
+        """Построчный разбор буфера raw (нестандартный блок), ошибки с номером строки."""
         for ln, line in zip(raw_ln, raw):
             try:
                 append_n(int(line[3:13]))
@@ -163,6 +163,7 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
                                  f"узла DISP: {line.rstrip()!r}") from None
 
     def emit():
+        """Собрать DispBlock из буферов и очистить их."""
         nonlocal in_disp, block_idx
         label = (f"step {step} (time {time_s})" if time_s else f"block {block_idx}")
         if raw and not cur_nodes:                  # однородный блок — векторно
@@ -189,6 +190,7 @@ def iter_disp_blocks(frd_path: Path) -> Iterator[DispBlock]:
         return blk
 
     def on_100cl(line: str) -> None:
+        """Разбор строки '100CL <шаг> <время>'; битая — молча пропускается."""
         nonlocal step, time_s
         parts = line.split()
         try:

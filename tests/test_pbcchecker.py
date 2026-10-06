@@ -1,3 +1,4 @@
+"""Юнит-тесты pbcchecker: разбор .inp/.frd, невязки, CLI, отчёты."""
 import json
 
 import pytest

@@ -17,6 +17,7 @@ TOP_WORST = 10
 
 @dataclass(frozen=True)
 class GateOutcome:
+    """Вердикт гейта для отчёта (заполняется в gate.check_job)."""
     verdict: str            # PASS | FAIL | N/A
     tol: float
     max_rel_residual: float
@@ -26,6 +27,7 @@ class GateOutcome:
 
 
 def sha256(path: Path) -> str:
+    """sha256 файла потоково (чанками по 1 МБ)."""
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -91,6 +93,7 @@ def write_reports(data: dict, out_dir: Optional[Path], job_stem: str) -> List[Pa
 
 
 def to_markdown(d: dict) -> str:
+    """Markdown-представление отчёта (данные из build_report)."""
     frd_sha = d["inputs"]["frd_sha256"]
     frd_line = (f"- .frd: `{d['inputs']['frd']}` (sha256 `{frd_sha[:16]}…`)"
                 if frd_sha else "- .frd: не найден (N/A)")

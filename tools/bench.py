@@ -49,6 +49,7 @@ def make_big(n_nodes: int, n_eq: int, n_steps: int):
 
 
 def stage(name, fn, reps=1):
+    """Замер стадии: min по reps повторам (лучший прогон = минимум шума ОС)."""
     best = float("inf")
     for _ in range(reps):
         t0 = time.perf_counter()

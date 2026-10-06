@@ -24,6 +24,7 @@ FIELD_EPS = 5e-6
 
 @dataclass(frozen=True)
 class StepResidual:
+    """Невязки одного шага: максимумы и худшее уравнение."""
     label: str
     max_abs_u: float
     max_abs_residual: float
@@ -35,6 +36,7 @@ class StepResidual:
 
 @dataclass(frozen=True)
 class ResidualResult:
+    """Результат compute_residuals: шаги + per-equation максимумы."""
     steps: List[StepResidual]
     n_equations: int
     eq_max_rel: List[float]   # max по шагам относительной невязки каждого уравнения
@@ -61,6 +63,8 @@ def term_arrays(equations: Sequence[Equation]) -> Tuple[np.ndarray, np.ndarray,
 
 
 def compute_residuals(equations: Sequence[Equation], blocks: List[DispBlock]) -> ResidualResult:
+    """Невязки всех уравнений по всем блокам; узлы без DISP — KeyError,
+    пустой deck/блоки — ValueError."""
     if not equations:
         raise ValueError("нет уравнений *EQUATION")
     if not blocks:

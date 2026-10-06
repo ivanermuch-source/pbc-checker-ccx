@@ -14,6 +14,7 @@ pytestmark = pytest.mark.e2e
 
 
 def run_cli(args, cwd=None, env_extra=None, timeout=120):
+    """Подпроцесс python -m pbcchecker.cli с чистым окружением."""
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
     if env_extra:

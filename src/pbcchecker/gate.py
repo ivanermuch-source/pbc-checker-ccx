@@ -1,4 +1,4 @@
-"""Гейт check_job(): верхний API для CLI и для вызова из АВТОсбор (за флагом-выключателем)."""
+"""Гейт check_job(): верхний API для CLI и для вызова из внешних пайплайнов (за флагом-выключателем)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -13,6 +13,7 @@ from .residual import ResidualResult, compute_residuals
 
 @dataclass(frozen=True)
 class Verdict:
+    """Итог check_job для CLI и внешних пайплайнов."""
     passed: Optional[bool]           # None = N/A (нет уравнений)
     verdict: str                     # PASS | FAIL | N/A
     max_rel_residual: float

@@ -15,6 +15,7 @@ from .gate import check_job
 
 
 def main(argv=None) -> int:
+    """Точка входа CLI; возвращает код выхода 0 (PASS/N/A) / 1 (FAIL) / 2 (ошибка)."""
     # кириллица/«…» в сообщениях при редиректе в файл с иной кодировкой
     # (например, cp1252 в CI) не должна ронять прогон кодом 1 «как FAIL»
     for stream in (sys.stdout, sys.stderr):
