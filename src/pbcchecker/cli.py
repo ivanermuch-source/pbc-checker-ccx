@@ -16,11 +16,12 @@ from .gate import check_job
 
 def main(argv=None) -> int:
     """Точка входа CLI; возвращает код выхода 0 (PASS/N/A) / 1 (FAIL) / 2 (ошибка)."""
-    # кириллица/«…» в сообщениях при редиректе в файл с иной кодировкой
-    # (например, cp1252 в CI) не должна ронять прогон кодом 1 «как FAIL»
+    # вывод всегда UTF-8: консоль Windows пишется через UTF-16 API (без потерь),
+    # пайпы/редиректы получают UTF-8 (PEP 686) — ни UnicodeEncodeError, ни
+    # '??????' вместо кириллицы на раннерах с cp1252
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            stream.reconfigure(encoding="utf-8", errors="replace")
         except (AttributeError, ValueError):
             pass
     ap = argparse.ArgumentParser(

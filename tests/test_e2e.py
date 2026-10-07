@@ -57,13 +57,14 @@ def test_e2e_data_error_exit2(tmp_path):
 
 
 def test_e2e_redirect_nonutf8_console(tmp_path):
-    """Редирект/консоль с чужой кодировкой (cp1252 в CI) не должен ронять
-    прогон: кириллица заменяется, код выхода честный (не 1=FAIL)."""
+    """Чужая локаль (PYTHONIOENCODING=cp1252, как на CI-раннерах) не должна
+    ни ронять прогон, ни превращать кириллицу в ?????? — CLI пишет UTF-8."""
     inp, frd = tmp_path / "job.inp", tmp_path / "job.frd"
     make_inp(inp, [[(1, 1, 1.0), (2, 1, -1.0)]])
     make_frd(frd, [(1, "0.1E-01", {1: (5e-4, 0, 0), 2: (5e-4, 0, 0)})])
     r = run_cli([str(inp)], env_extra={"PYTHONIOENCODING": "cp1252"})
     assert r.returncode == 0 and "Traceback" not in r.stderr + r.stdout
+    assert "худшее уравнение" in r.stdout      # кириллица читаема, не '??????'
 
 
 def test_e2e_cyrillic_paths_and_relative_cwd(tmp_path):
