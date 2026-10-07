@@ -33,3 +33,7 @@ examples/reports/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# личные инструменты сравнения версий (не публикуются)
+tools/version_report.py
+tools/_vcmp/
