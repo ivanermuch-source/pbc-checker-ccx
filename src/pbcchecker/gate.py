@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from .frd_disp import iter_disp_blocks, read_ccx_version
-from .inp_equations import Equation, parse_equations
+from .inp_equations import parse_equations
+from .pbc_audit import PbcAuditResult, audit_pbc
 from .report import GateOutcome, build_report, write_reports
 from .residual import ResidualResult, compute_residuals
 
@@ -23,16 +24,21 @@ class Verdict:
     result: Optional[ResidualResult]
     report_paths: List[Path]
     worst_equation: str = field(default="")   # render худшего уравнения (для CLI)
+    audit: Optional[PbcAuditResult] = None    # результат --pbc-audit, если запрошен
 
 
 def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
-              out_dir: Optional[Path] = None) -> Verdict:
+              out_dir: Optional[Path] = None,
+              pbc_audit: bool = False) -> Verdict:
     """Проверить PBC-невязки прогона. frd по умолчанию = inp с суффиксом .frd.
 
     Семантика: PASS — max относительная невязка ≤ tol на всех шагах;
     FAIL — выше tol хотя бы на одном; N/A — в deck нет *EQUATION (прогон без PBC).
     N/A тоже пишет отчёт при заданном out_dir — audit_trace без дыр.
-    """
+
+    pbc_audit=True добавляет аудит самих связей по геометрии *NODE (покрытие
+    граней, симметрия пар, дубликаты): провал аудита — FAIL даже при чистой
+    невязке; при N/A (нет уравнений) аудит неприменим и не выполняется."""
     inp = Path(inp)
     frd = Path(frd) if frd else inp.with_suffix(".frd")
     equations = parse_equations(inp)
@@ -49,22 +55,30 @@ def check_job(inp: Path, frd: Optional[Path] = None, tol: float = 1e-3,
         raise FileNotFoundError(f"{frd}: нет файла результатов (.frd). "
                                 f"Добавьте в deck '*NODE FILE' + 'U' и перезапустите ccx.")
 
+    audit: Optional[PbcAuditResult] = None
+    if pbc_audit:
+        audit = audit_pbc(inp, equations)
+        if audit.verdict == "N/A" and audit.n_nodes == 0:
+            raise ValueError(f"--pbc-audit: {audit.note}")
+
     blocks = list(iter_disp_blocks(frd))
     result = compute_residuals(equations, blocks)
     worst = max(result.steps, key=lambda s: s.max_rel_residual)
     passed = worst.max_rel_residual <= tol
+    if audit is not None and audit.verdict == "FAIL":
+        passed = False
     worst_idx = max(range(len(equations)), key=lambda i: result.eq_max_rel[i])
     verdict = "PASS" if passed else "FAIL"
     paths = []
     if out_dir is not None:       # рендер всех уравнений + sha256 — только для отчёта
         floor_note = (f"ASCII .frd хранит перемещения в E12.5 — сертифицируемый уровень "
                       f"≈{worst.floor_abs:.1e} абс. для этого шага; невязки ниже пола "
-                      f"неотличимы от шума формата")
+                      "неотличимы от шума формата")
         outcome = GateOutcome(verdict, tol, worst.max_rel_residual, worst.label,
                               worst.worst_eq, floor_note)
         data = build_report(inp, frd, result, outcome, read_ccx_version(frd),
-                            [eq.render() for eq in equations])
+                            [eq.render() for eq in equations], audit=audit)
         paths = write_reports(data, Path(out_dir), inp.stem)
     return Verdict(passed, verdict, worst.max_rel_residual, worst.label,
                    worst.worst_eq, len(equations), result, paths,
-                   equations[worst_idx].render())
+                   equations[worst_idx].render(), audit)

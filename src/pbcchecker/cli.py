@@ -33,6 +33,9 @@ def main(argv=None) -> int:
                     help="порог относительной невязки, > 0 (по умолчанию 1e-3)")
     ap.add_argument("--out-dir", default=None,
                     help="каталог для pbc_report_<job>_<дата>.{json,md} (audit_trace)")
+    ap.add_argument("--pbc-audit", action="store_true",
+                    help="аудит самих *EQUATION по *NODE: покрытие граней связями, "
+                         "симметрия пар, дубликаты (провал → FAIL даже при чистой невязке)")
     ap.add_argument("--version", action="version", version=f"pbcchecker {__version__}")
     args = ap.parse_args(argv)
     if not (args.tol > 0):   # отсекает и <=0, и nan
@@ -40,7 +43,8 @@ def main(argv=None) -> int:
 
     try:
         v = check_job(Path(args.inp), Path(args.frd) if args.frd else None,
-                      tol=args.tol, out_dir=Path(args.out_dir) if args.out_dir else None)
+                      tol=args.tol, out_dir=Path(args.out_dir) if args.out_dir else None,
+                      pbc_audit=args.pbc_audit)
     except Exception as e:   # любой сбой — код 2, не неотличимый от FAIL traceback
         print(f"ОШИБКА ДАННЫХ: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
@@ -56,6 +60,10 @@ def main(argv=None) -> int:
           f"всего уравнений {v.n_equations})")
     if v.worst_equation:
         print(f"худшее уравнение: {v.worst_equation}")
+    if v.audit is not None:
+        from .pbc_audit import audit_summary
+        for line in audit_summary(v.audit):
+            print(line)
     for p in v.report_paths:
         print(f"отчёт: {p}")
     return 0 if v.passed else 1

@@ -37,8 +37,10 @@ def sha256(path: Path) -> str:
 
 def build_report(inp: Path, frd: Optional[Path], result: Optional[ResidualResult],
                  outcome: GateOutcome, ccx_version: str,
-                 equations_rendered: List[str]) -> dict:
-    """Отчёт-словарь; result=None для вердикта N/A (frd может отсутствовать)."""
+                 equations_rendered: List[str],
+                 audit=None) -> dict:
+    """Отчёт-словарь; result=None для вердикта N/A (frd может отсутствовать);
+    audit — Optional[PbcAuditResult] при --pbc-audit."""
     if result is not None:
         # топ худших уравнений — по max относительной невязке по всем шагам,
         # а не по порядку в deck
@@ -67,7 +69,18 @@ def build_report(inp: Path, frd: Optional[Path], result: Optional[ResidualResult
         "worst_equation_index": outcome.worst_eq,
         "sensitivity_floor": outcome.floor_note,
         "steps": steps,
+        "pbc_audit": _audit_dict(audit),
     }
+
+
+def _audit_dict(audit) -> Optional[dict]:
+    """PbcAuditResult → сводный dict для JSON-отчёта (None без --pbc-audit)."""
+    if audit is None:
+        return None
+    from dataclasses import asdict as _asdict
+    return {"verdict": audit.verdict, "n_nodes": audit.n_nodes, "note": audit.note,
+            "duplicates": [list(p) for p in audit.duplicates],
+            "directions": [_asdict(d) for d in audit.directions]}
 
 
 def write_reports(data: dict, out_dir: Optional[Path], job_stem: str) -> List[Path]:
@@ -123,4 +136,16 @@ def to_markdown(d: dict) -> str:
                       "по max|r|/max|u|)", ""]
         lines += [f"- {w['max_rel_residual']:.3e} `{w['equation']}`"
                   for w in d["worst_equations"]]
+    if d.get("pbc_audit"):
+        audit = d["pbc_audit"]
+        lines += ["", f"## PBC-аudit: {audit['verdict']}", ""]
+        if audit.get("note"):
+            lines.append(f"- {audit['note']}")
+        for dd in audit.get("directions", []):
+            lines.append(f"- ось {'xyz'[dd['axis']]}: покрытие граней "
+                         f"{dd['n_covered']}/{dd['n_face_nodes']}, симметрия пар "
+                         f"{dd['n_symmetric']}/{dd['n_equations']}")
+        if audit.get("duplicates"):
+            lines.append("- дубликаты уравнений: "
+                         + ", ".join(f"{a}≡{b}" for a, b in audit["duplicates"]))
     return "\n".join(lines) + "\n"
