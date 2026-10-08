@@ -52,10 +52,33 @@ class Equation:
         return f"[{self.index}] {s} = 0"
 
 
+class _Peekable:
+    """Итератор (номер, строка) с pushback — карточку, заглянувшую вперёд
+    в _parse_one, нужно вернуть внешнему циклу."""
+
+    def __init__(self, fh):
+        self._it = enumerate(fh, 1)
+        self._pending = None
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._pending is not None:
+            item, self._pending = self._pending, None
+            return item
+        return next(self._it)
+
+    def pushback(self, item):
+        """Вернуть строку в начало итератора (одна, без стека)."""
+        self._pending = item
+
+
 def parse_equations(inp_path: Path, _seen=None, _depth: int = 0) -> List[Equation]:
     """Все *EQUATION deck'а, включая раскрытые *INCLUDE (рекурсивно, с защитой
-    от циклов). Уравнения без термов, с мусором или оборванные следующей
-    *-карточкой — ValueError с номером строки, чтобы испорченный .inp
+    от циклов). Уравнения без термов, с мусором, оборванные следующей
+    *-карточкой или с данными после термов (вторая связь под той же
+    карточкой) — ValueError с номером строки, чтобы испорченный .inp
     не превращался в тихий PASS."""
     inp_path = Path(inp_path)
     equations: List[Equation] = []
@@ -67,7 +90,7 @@ def parse_equations(inp_path: Path, _seen=None, _depth: int = 0) -> List[Equatio
     if key in _seen:
         raise ValueError(f"{inp_path}: цикл *INCLUDE (файл включён повторно)")
     with inp_path.open(encoding="utf-8-sig", errors="ignore") as f:
-        lines = enumerate(f, 1)
+        lines = _Peekable(f)
         for lineno, raw in lines:
             s = raw.strip()
             if not s.startswith("*") or s.startswith("**"):
@@ -165,4 +188,17 @@ def _parse_one(inp_path: Path, lines, card_lineno: int, eq_idx: int) -> Equation
             raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: коэффициент терма #{k + 1} "
                              f"не конечен ({coef_s!r}) — deck испорчен")
         terms.append((node, dof, coef))
+    # хвост карточки: следующая значимая строка обязана быть *-карточкой или
+    # EOF; не-* данные = ещё один блок «N / термы» под той же карточкой — без
+    # этой проверки связи молча теряются и прогон проходит проверку наполовину
+    for lineno, raw in lines:
+        s = raw.strip()
+        if not s or s.startswith("**"):
+            continue
+        if not s.startswith("*"):
+            raise ValueError(f"{inp_path}: *EQUATION #{eq_idx}: данные после {n_terms} "
+                             f"термов (строка {lineno}: {s.split(',')[0]!r}) — каждая "
+                             "связь требует собственной карточки *EQUATION")
+        lines.pushback((lineno, raw))
+        break
     return Equation(eq_idx, tuple(terms))

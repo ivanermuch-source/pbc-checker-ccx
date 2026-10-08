@@ -37,3 +37,6 @@ Desktop.ini
 # личные инструменты сравнения версий (не публикуются)
 tools/version_report.py
 tools/_vcmp/
+
+# артефакты метрик дополнительной валидации (tools/metrics_report.py)
+docs/metrics/
