@@ -37,7 +37,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "pbcchecker"
-MODULES = ["cli.py", "gate.py", "report.py", "residual.py", "frd_disp.py", "inp_equations.py"]
+MODULES = ["cli.py", "gate.py", "report.py", "residual.py", "frd_disp.py", "inp_equations.py",
+           "pbc_audit.py"]
 
 NUM_RE = re.compile(r"\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b")
 CMP_SWAPS = [("<=", "<"), (">=", ">"), ("==", "!="), ("!=", "=="),

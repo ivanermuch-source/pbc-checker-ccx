@@ -9,8 +9,10 @@ F-серия — робастность CLI на мусорных входах: 
 .inp/.frd через pbcchecker.cli.main в процессе.
 
 Запуск:  python tools/metrics_report.py [--out docs/metrics] [--n-fuzz 1000]
-Выход:   metrics.json + fig_m_compass.png + fig_f_robustness.png +
-         fig_residual_map.png. Пороги держит tests/test_metrics.py.
+Выход:   metrics.json + 4 графика (fig_m_compass, fig_f_robustness,
+         fig_residual_map, fig_c_calibration) + сводный дашборд
+         fig_summary_dashboard — все из фактических данных отчёта.
+         Пороги держат tests/test_metrics.py.
 """
 from __future__ import annotations
 

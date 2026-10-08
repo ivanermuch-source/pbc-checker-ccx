@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pbcchecker"
-version = "0.1.0"
+version = "0.2.0"
 description = "PBC residual checker for CalculiX: verifies *EQUATION periodic constraints against DISP from .frd"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,6 +24,7 @@ Homepage = "https://github.com/ivanermuch-source/pbc-checker-ccx"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
+report = ["matplotlib>=3.7"]   # графики/дашборд tools/metrics_report.py
 
 [project.scripts]
 pbc-check = "pbcchecker.cli:main"
